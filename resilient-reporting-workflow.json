@@ -1,0 +1,205 @@
+{
+  "name": "Resilient Scheduled Reporting (demo)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "node-schedule",
+      "name": "Daily 6AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://dummyjson.com/products?limit=100",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-fetch",
+      "name": "Fetch Data (public demo API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 3000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reliability detail #3: validate the response BEFORE trusting it.\n// The most dangerous failure mode is not an error \u2014 it is a call\n// that 'succeeds' but returns empty or malformed data, which then\n// flows downstream and silently corrupts the report. We check shape\n// explicitly and flag it, rather than assuming a 200 means good data.\nconst body = $input.first().json;\nconst items = Array.isArray(body?.products) ? body.products : null;\n\nconst validation = {\n  ok: false,\n  reason: '',\n};\n\nif (!items) {\n  validation.reason = 'Response missing expected products array';\n} else if (items.length === 0) {\n  validation.reason = 'Response returned zero rows (possible upstream outage)';\n} else {\n  validation.ok = true;\n}\n\n// Compute a small piece of analysis + a low-stock flag list.\n// (Generic demo logic \u2014 mirrors a real reporting/anomaly step.)\nconst LOW_STOCK_THRESHOLD = 20;\nconst rows = (items || []).map(p => ({\n  id: p.id,\n  title: p.title,\n  stock: p.stock,\n  price: p.price,\n  lowStock: typeof p.stock === 'number' && p.stock < LOW_STOCK_THRESHOLD,\n}));\nconst lowStockCount = rows.filter(r => r.lowStock).length;\n\nreturn [{ json: { validation, rowCount: rows.length, lowStockCount, rows } }];\n"
+      },
+      "id": "node-validate",
+      "name": "Validate & Analyze",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.validation.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if",
+      "name": "Data valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the report payload. In a real build this feeds an Excel/Sheet\n// writer + an email/Slack delivery step. Kept as a plain payload here\n// so the demo needs zero credentials to import and inspect.\nconst d = $input.first().json;\nconst summary = `Daily report: ${d.rowCount} items, ${d.lowStockCount} low on stock.`;\nreturn [{ json: { summary, generatedAt: new Date().toISOString(), ...d } }];\n"
+      },
+      "id": "node-report",
+      "name": "Build Report Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "node-write",
+      "name": "Write to Destination (placeholder)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reliability detail #4: failures and bad data are LOUD, not silent.\n// Both the API-error output and the failed-validation branch land here,\n// where a real build fires a Slack/email alert so the team finds out\n// immediately instead of discovering a stale report days later.\nconst item = $input.first().json;\nconst reason = item?.validation?.reason\n  || item?.error?.message\n  || 'Upstream fetch failed after retries';\nreturn [{ json: { alert: true, reason, at: new Date().toISOString() } }];\n"
+      },
+      "id": "node-alert",
+      "name": "Raise Alert (placeholder)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 6AM Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Data (public demo API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Data (public demo API)": {
+      "main": [
+        [
+          {
+            "node": "Validate & Analyze",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Raise Alert (placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Analyze": {
+      "main": [
+        [
+          {
+            "node": "Data valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data valid?": {
+      "main": [
+        [
+          {
+            "node": "Build Report Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Raise Alert (placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report Summary": {
+      "main": [
+        [
+          {
+            "node": "Write to Destination (placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateId": "portfolio-demo-resilient-reporting"
+  }
+}
